@@ -30,7 +30,7 @@ frontend/              # Next.js frontend
 
 ## Tech Stack
 
-- **Backend**: FastAPI, Python 3.11
+- **Backend**: Django Ninja Extra, Python 3.11
 - **Database**: PostgreSQL
 - **Agent Framework**: LangGraph
 - **Text-to-SQL**: Vanna AI with ChromaDB

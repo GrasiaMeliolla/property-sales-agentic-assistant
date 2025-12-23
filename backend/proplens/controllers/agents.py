@@ -22,33 +22,33 @@ class AgentsController:
     """Controller for AI agent chat functionality."""
 
     @http_post("/chat", response=ChatResponseSchema)
-    def chat(self, request: ChatRequestSchema):
+    def chat(self, data: ChatRequestSchema):
         """Process a chat message."""
-        conversation = conversation_service.get_conversation(request.conversation_id)
+        conversation = conversation_service.get_conversation(data.conversation_id)
         if not conversation:
             raise NotFound("Conversation not found")
 
-        messages_history = conversation_service.get_messages(request.conversation_id)
+        messages_history = conversation_service.get_messages(data.conversation_id)
         context = conversation.context or {}
         preferences = context.get("preferences", {})
         lead_info = context.get("lead_info", {})
 
         conversation_service.add_message(
-            conversation_id=request.conversation_id,
+            conversation_id=data.conversation_id,
             role="user",
-            content=request.message
+            content=data.message
         )
 
         result = property_agent.process(
-            message=request.message,
-            conversation_id=str(request.conversation_id),
+            message=data.message,
+            conversation_id=str(data.conversation_id),
             messages_history=messages_history,
             preferences=preferences,
             lead_info=lead_info
         )
 
         conversation_service.add_message(
-            conversation_id=request.conversation_id,
+            conversation_id=data.conversation_id,
             role="assistant",
             content=result["response"],
             extra_data={
@@ -63,13 +63,13 @@ class AgentsController:
             "preferences": result.get("preferences", {}),
             "lead_info": result.get("lead_info", {})
         }
-        conversation_service.update_context(request.conversation_id, new_context)
+        conversation_service.update_context(data.conversation_id, new_context)
 
         if result.get("booking_confirmed"):
             lead_info_result = result.get("lead_info", {})
             if lead_info_result.get("email"):
                 lead = conversation_service.get_or_create_lead(
-                    request.conversation_id, lead_info_result
+                    data.conversation_id, lead_info_result
                 )
 
                 if result.get("preferences"):
@@ -101,7 +101,7 @@ class AgentsController:
 
         return ChatResponseSchema(
             response=result["response"],
-            conversation_id=request.conversation_id,
+            conversation_id=data.conversation_id,
             recommended_projects=recommended if recommended else None,
             metadata=ChatMetadataSchema(
                 intent=result.get("intent"),
@@ -110,43 +110,54 @@ class AgentsController:
         )
 
     @http_post("/chat/stream")
-    def chat_stream(self, request: ChatRequestSchema):
+    def chat_stream(self, data: ChatRequestSchema):
         """Process a chat message with streaming response."""
-        conversation = conversation_service.get_conversation(request.conversation_id)
+        conversation = conversation_service.get_conversation(data.conversation_id)
         if not conversation:
             raise NotFound("Conversation not found")
 
-        messages_history = conversation_service.get_messages(request.conversation_id)
+        messages_history = conversation_service.get_messages(data.conversation_id)
         context = conversation.context or {}
-        preferences = context.get("preferences", {})
-        lead_info = context.get("lead_info", {})
+        prefs = context.get("preferences", {})
+        lead = context.get("lead_info", {})
+        recommended = context.get("recommended_properties", [])
+        booking_project = context.get("booking_project")
 
         conversation_service.add_message(
-            conversation_id=request.conversation_id,
+            conversation_id=data.conversation_id,
             role="user",
-            content=request.message
+            content=data.message
         )
+
+        # Capture for closure
+        msg = data.message
+        conv_id = str(data.conversation_id)
+        conv_id_uuid = data.conversation_id
+        prev_recommended = recommended
+        prev_booking_project = booking_project
 
         def generate():
             full_response = ""
-            final_data = {}
+            final_result = {}
 
             async def stream_async():
-                nonlocal full_response, final_data
+                nonlocal full_response, final_result
 
                 async for chunk in property_agent.process_stream(
-                    message=request.message,
-                    conversation_id=str(request.conversation_id),
+                    message=msg,
+                    conversation_id=conv_id,
                     messages_history=messages_history,
-                    preferences=preferences,
-                    lead_info=lead_info
+                    preferences=prefs,
+                    lead_info=lead,
+                    recommended_properties=prev_recommended,
+                    booking_project=prev_booking_project
                 ):
                     chunk_type = chunk.get("type")
-                    data = chunk.get("data")
+                    chunk_data = chunk.get("data")
 
                     if chunk_type == "content":
-                        full_response += data
-                        yield f"data: {json.dumps({'type': 'content', 'data': data})}\n\n"
+                        full_response += chunk_data
+                        yield f"data: {json.dumps({'type': 'content', 'data': chunk_data})}\n\n"
 
                     elif chunk_type == "properties":
                         props = [
@@ -157,19 +168,19 @@ class AgentsController:
                                 "price_usd": p.get("price_usd"),
                                 "bedrooms": p.get("bedrooms")
                             }
-                            for p in data
+                            for p in chunk_data
                         ]
                         yield f"data: {json.dumps({'type': 'properties', 'data': props})}\n\n"
 
                     elif chunk_type == "intent":
-                        yield f"data: {json.dumps({'type': 'intent', 'data': data})}\n\n"
+                        yield f"data: {json.dumps({'type': 'intent', 'data': chunk_data})}\n\n"
 
                     elif chunk_type == "done":
-                        final_data = data
-                        yield f"data: {json.dumps({'type': 'done', 'data': data})}\n\n"
+                        final_result = chunk_data
+                        yield f"data: {json.dumps({'type': 'done', 'data': chunk_data})}\n\n"
 
                     elif chunk_type == "error":
-                        yield f"data: {json.dumps({'type': 'error', 'data': data})}\n\n"
+                        yield f"data: {json.dumps({'type': 'error', 'data': chunk_data})}\n\n"
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -185,17 +196,25 @@ class AgentsController:
             finally:
                 if full_response:
                     conversation_service.add_message(
-                        conversation_id=request.conversation_id,
+                        conversation_id=conv_id_uuid,
                         role="assistant",
                         content=full_response,
-                        extra_data={"intent": final_data.get("intent")}
+                        extra_data={"intent": final_result.get("intent")}
                     )
 
+                    # Save all context including recommended properties
+                    recommended = final_result.get("recommended_properties", [])
+                    booking_project = None
+                    if recommended:
+                        booking_project = recommended[0].get("project_name") if isinstance(recommended[0], dict) else None
+
                     conversation_service.update_context(
-                        request.conversation_id,
+                        conv_id_uuid,
                         {
-                            "preferences": final_data.get("preferences", {}),
-                            "lead_info": final_data.get("lead_info", {})
+                            "preferences": final_result.get("preferences", {}),
+                            "lead_info": final_result.get("lead_info", {}),
+                            "recommended_properties": recommended,
+                            "booking_project": booking_project
                         }
                     )
 

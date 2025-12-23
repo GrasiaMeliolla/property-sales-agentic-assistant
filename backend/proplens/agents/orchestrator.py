@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, Optional, List, AsyncGenerator
 
 from django.conf import settings
+from asgiref.sync import sync_to_async
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -242,9 +243,15 @@ class PropertySalesAgent:
         properties = state.get("recommended_properties", [])
         lead_info = state.get("lead_info", {})
 
+        # Use existing booking_project or get from recommended properties
+        if not state.get("booking_project") and properties:
+            if isinstance(properties[0], dict):
+                state["booking_project"] = properties[0].get("project_name")
+            elif hasattr(properties[0], "project_name"):
+                state["booking_project"] = properties[0].project_name
+
         if properties:
             state["selected_property"] = properties[0]
-            state["booking_project"] = properties[0].get("project_name")
 
         missing = []
         if not lead_info.get("first_name"):
@@ -271,15 +278,28 @@ class PropertySalesAgent:
         new_info = extract_json(response.content)
 
         for key, value in new_info.items():
-            if value is not None and value != "null":
+            if value is not None and value != "null" and value != "":
                 current_lead[key] = value
 
         state["lead_info"] = current_lead
 
+        # Get booking_project from recommended properties if not set
+        if not state.get("booking_project"):
+            properties = state.get("recommended_properties", [])
+            if properties:
+                state["booking_project"] = properties[0].get("project_name")
+
         if current_lead.get("first_name") and current_lead.get("email"):
             state["booking_confirmed"] = True
+            state["missing_preferences"] = []
         else:
             state["booking_confirmed"] = False
+            missing = []
+            if not current_lead.get("first_name"):
+                missing.append("name")
+            if not current_lead.get("email"):
+                missing.append("email")
+            state["missing_preferences"] = missing
 
         return state
 
@@ -420,7 +440,9 @@ Confirm the booking enthusiastically. Let them know a representative will contac
         conversation_id: str,
         messages_history: Optional[List[Dict[str, str]]] = None,
         preferences: Optional[Dict] = None,
-        lead_info: Optional[Dict] = None
+        lead_info: Optional[Dict] = None,
+        recommended_properties: Optional[List] = None,
+        booking_project: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process a user message with streaming response."""
 
@@ -430,7 +452,8 @@ Confirm the booking enthusiastically. Let them know a representative will contac
             "messages": messages_history or [],
             "preferences": preferences or {},
             "lead_info": lead_info or {},
-            "recommended_properties": [],
+            "recommended_properties": recommended_properties or [],
+            "booking_project": booking_project,
             "response": "",
             "booking_confirmed": False,
             "needs_more_info": False,
@@ -440,7 +463,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
 
         try:
             state = initial_state.copy()
-            state = self._classify_intent(state)
+            state = await sync_to_async(self._classify_intent, thread_sensitive=True)(state)
             intent = state.get("intent")
 
             yield {"type": "intent", "data": intent}
@@ -452,16 +475,16 @@ Confirm the booking enthusiastically. Let them know a representative will contac
                 return
 
             if intent == "gathering_preferences":
-                state = self._gather_preferences(state)
-                state = self._search_properties(state)
+                state = await sync_to_async(self._gather_preferences, thread_sensitive=True)(state)
+                state = await sync_to_async(self._search_properties, thread_sensitive=True)(state)
             elif intent == "searching_properties":
-                state = self._search_properties(state)
+                state = await sync_to_async(self._search_properties, thread_sensitive=True)(state)
             elif intent == "answering_question":
-                state = self._answer_question(state)
+                state = await sync_to_async(self._answer_question, thread_sensitive=True)(state)
             elif intent == "booking_visit":
                 state = self._handle_booking(state)
             elif intent == "collecting_lead_info":
-                state = self._collect_lead_info(state)
+                state = await sync_to_async(self._collect_lead_info, thread_sensitive=True)(state)
 
             if state.get("recommended_properties"):
                 yield {"type": "properties", "data": state["recommended_properties"]}

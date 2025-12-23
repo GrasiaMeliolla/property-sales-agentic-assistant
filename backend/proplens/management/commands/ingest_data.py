@@ -42,11 +42,12 @@ class Command(BaseCommand):
         with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
 
-            for row in reader:
+            for row_num, row in enumerate(reader, start=2):
                 try:
                     price = None
-                    if row.get("Price"):
-                        price_str = row["Price"].replace(",", "").replace("$", "").strip()
+                    price_str = row.get("Price (USD)", "") or row.get("Price", "")
+                    if price_str:
+                        price_str = str(price_str).replace(",", "").replace("$", "").strip()
                         if price_str:
                             try:
                                 price = float(price_str)
@@ -54,61 +55,84 @@ class Command(BaseCommand):
                                 pass
 
                     bedrooms = None
-                    if row.get("Bedrooms"):
+                    bed_str = row.get("No of bedrooms", "") or row.get("Bedrooms", "")
+                    if bed_str:
                         try:
-                            bedrooms = int(row["Bedrooms"])
+                            bedrooms = int(bed_str)
                         except ValueError:
                             pass
 
                     bathrooms = None
-                    if row.get("Bathrooms"):
+                    bath_str = row.get("bathrooms", "") or row.get("Bathrooms", "")
+                    if bath_str:
                         try:
-                            bathrooms = int(row["Bathrooms"])
+                            bathrooms = int(bath_str)
                         except ValueError:
                             pass
 
                     area = None
-                    if row.get("Area (sqm)"):
+                    area_str = row.get("Area (sq mtrs)", "") or row.get("Area (sqm)", "")
+                    if area_str:
                         try:
-                            area = float(row["Area (sqm)"])
+                            area = float(area_str)
                         except ValueError:
                             pass
 
                     features = []
-                    if row.get("Features"):
+                    feat_str = row.get("features", "") or row.get("Features", "")
+                    if feat_str:
                         try:
-                            features = json.loads(row["Features"])
+                            features = json.loads(feat_str)
                         except json.JSONDecodeError:
-                            features = [f.strip() for f in row["Features"].split(",") if f.strip()]
+                            features = [f.strip() for f in feat_str.split(",") if f.strip()]
 
                     facilities = []
-                    if row.get("Facilities"):
+                    fac_str = row.get("facilities", "") or row.get("Facilities", "")
+                    if fac_str:
                         try:
-                            facilities = json.loads(row["Facilities"])
+                            facilities = json.loads(fac_str)
                         except json.JSONDecodeError:
-                            facilities = [f.strip() for f in row["Facilities"].split(",") if f.strip()]
+                            facilities = [f.strip() for f in fac_str.split(",") if f.strip()]
 
-                    project_name = row.get("Project Name", "").strip()
+                    project_name = (row.get("Project name", "") or row.get("Project Name", "")).strip()
+
+                    # If no project name, try to generate from city/developer
                     if not project_name:
-                        continue
+                        city = (row.get("city", "") or row.get("City", "")).strip()
+                        developer = (row.get("developer name", "") or row.get("Developer Name", "")).strip()
+                        if city and developer:
+                            project_name = f"{developer} - {city}"
+                        elif city:
+                            project_name = f"Property in {city} (Row {row_num})"
+                        else:
+                            continue
+
+                    completion_status = (row.get("Completion status (off plan/available)", "") or row.get("Completion Status", "")).strip()
+                    unit_type = (row.get("unit type", "") or row.get("Unit Type", "")).strip()
+                    developer_name = (row.get("developer name", "") or row.get("Developer Name", "")).strip()
+                    property_type = (row.get("Property type (apartment/villa)", "") or row.get("Property Type", "")).strip().lower()
+                    city = (row.get("city", "") or row.get("City", "")).strip()
+                    country = (row.get("country", "") or row.get("Country", "")).strip()
+                    completion_date = (row.get("completion_date", "") or row.get("Completion Date", "")).strip()
+                    description = (row.get("Project description", "") or row.get("Description", "")).strip()
 
                     project, created = Project.objects.update_or_create(
                         project_name=project_name,
                         defaults={
                             "bedrooms": bedrooms,
                             "bathrooms": bathrooms,
-                            "completion_status": row.get("Completion Status", "").strip() or None,
-                            "unit_type": row.get("Unit Type", "").strip() or None,
-                            "developer_name": row.get("Developer Name", "").strip() or None,
+                            "completion_status": completion_status or None,
+                            "unit_type": unit_type or None,
+                            "developer_name": developer_name or None,
                             "price_usd": price,
                             "area_sqm": area,
-                            "property_type": row.get("Property Type", "").strip().lower() or None,
-                            "city": row.get("City", "").strip() or None,
-                            "country": row.get("Country", "").strip() or None,
-                            "completion_date": row.get("Completion Date", "").strip() or None,
+                            "property_type": property_type or None,
+                            "city": city or None,
+                            "country": country or None,
+                            "completion_date": completion_date or None,
                             "features": features,
                             "facilities": facilities,
-                            "description": row.get("Description", "").strip() or None,
+                            "description": description or None,
                         }
                     )
 

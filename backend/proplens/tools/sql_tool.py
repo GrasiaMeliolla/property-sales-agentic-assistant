@@ -1,7 +1,11 @@
-"""SQL tool using Vanna AI for text-to-SQL."""
+"""SQL tool using Vanna AI for text-to-SQL with Django ORM fallback."""
 import logging
 from typing import Optional, List, Dict, Any
 
+from django.db.models import Q
+from asgiref.sync import sync_to_async
+
+from proplens.models import Project
 from proplens.services.vanna import vanna_service
 
 logger = logging.getLogger(__name__)
@@ -13,7 +17,9 @@ class SQLTool:
     def query(self, question: str) -> Dict[str, Any]:
         """Query the database using natural language."""
         logger.info(f"SQL Tool processing question: {question}")
-        return vanna_service.ask(question)
+        if vanna_service.is_available:
+            return vanna_service.ask(question)
+        return {"error": "Vanna AI not available", "sql": None, "results": None}
 
     def search_properties(
         self,
@@ -24,50 +30,93 @@ class SQLTool:
         property_type: Optional[str] = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
-        """Search for properties with specific criteria."""
-        conditions = ["1=1"]
+        """Search for properties with specific criteria using Django ORM."""
+        logger.info(f"Searching properties: city={city}, price={min_price}-{max_price}, beds={bedrooms}")
+
+        queryset = Project.objects.filter(price_usd__isnull=False)
 
         if city:
-            conditions.append(f"LOWER(city) LIKE LOWER('%{city}%')")
+            queryset = queryset.filter(
+                Q(city__icontains=city) | Q(country__iexact=city)
+            )
         if min_price:
-            conditions.append(f"price_usd >= {min_price}")
+            queryset = queryset.filter(price_usd__gte=min_price)
         if max_price:
-            conditions.append(f"price_usd <= {max_price}")
+            queryset = queryset.filter(price_usd__lte=max_price)
         if bedrooms:
-            conditions.append(f"bedrooms = {bedrooms}")
+            queryset = queryset.filter(bedrooms=bedrooms)
         if property_type:
-            conditions.append(f"property_type = '{property_type.lower()}'")
+            queryset = queryset.filter(property_type__iexact=property_type)
 
-        where_clause = " AND ".join(conditions)
+        queryset = queryset.order_by('price_usd')[:limit]
 
-        sql = f"""
-        SELECT
-            id, project_name, bedrooms, bathrooms, price_usd,
-            area_sqm, city, country, property_type, completion_status,
-            developer_name, description
-        FROM projects
-        WHERE {where_clause}
-        AND price_usd IS NOT NULL
-        ORDER BY price_usd ASC
-        LIMIT {limit}
-        """
+        results = []
+        for p in queryset:
+            results.append({
+                "id": str(p.id),
+                "project_name": p.project_name,
+                "bedrooms": p.bedrooms,
+                "bathrooms": p.bathrooms,
+                "price_usd": p.price_usd,
+                "area_sqm": p.area_sqm,
+                "city": p.city,
+                "country": p.country,
+                "property_type": p.property_type,
+                "completion_status": p.completion_status,
+                "developer_name": p.developer_name,
+                "description": p.description[:500] if p.description else None
+            })
 
-        results = vanna_service.run_sql(sql)
-        logger.info(f"Property search returned {len(results) if results else 0} results")
-        return results or []
+        logger.info(f"Property search returned {len(results)} results")
+        return results
 
     def get_project_details(self, project_name: str) -> Optional[Dict[str, Any]]:
         """Get detailed information about a specific project."""
-        sql = f"""
-        SELECT * FROM projects
-        WHERE LOWER(project_name) LIKE LOWER('%{project_name}%')
-        LIMIT 1
-        """
-
-        results = vanna_service.run_sql(sql)
-        if results and len(results) > 0:
-            return results[0]
+        try:
+            p = Project.objects.filter(project_name__icontains=project_name).first()
+            if p:
+                return {
+                    "id": str(p.id),
+                    "project_name": p.project_name,
+                    "bedrooms": p.bedrooms,
+                    "bathrooms": p.bathrooms,
+                    "price_usd": p.price_usd,
+                    "area_sqm": p.area_sqm,
+                    "city": p.city,
+                    "country": p.country,
+                    "property_type": p.property_type,
+                    "completion_status": p.completion_status,
+                    "developer_name": p.developer_name,
+                    "description": p.description,
+                    "features": p.features,
+                    "facilities": p.facilities
+                }
+        except Exception as e:
+            logger.error(f"Error getting project details: {e}")
         return None
+
+    async def search_properties_async(
+        self,
+        city: Optional[str] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        bedrooms: Optional[int] = None,
+        property_type: Optional[str] = None,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Async version of search_properties for streaming endpoints."""
+        return await sync_to_async(self.search_properties, thread_sensitive=True)(
+            city=city,
+            min_price=min_price,
+            max_price=max_price,
+            bedrooms=bedrooms,
+            property_type=property_type,
+            limit=limit
+        )
+
+    async def query_async(self, question: str) -> Dict[str, Any]:
+        """Async version of query for streaming endpoints."""
+        return await sync_to_async(self.query, thread_sensitive=True)(question)
 
 
 sql_tool = SQLTool()

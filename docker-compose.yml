@@ -37,7 +37,7 @@ services:
       - "8000:8000"
     volumes:
       - ./chroma_data:/app/chroma_data
-      - "./Property sales agent - Challenge.csv:/app/data/properties.csv:ro"
+      - "./property-sales-agent.csv:/app/data/properties.csv:ro"
     depends_on:
       postgres:
         condition: service_healthy
