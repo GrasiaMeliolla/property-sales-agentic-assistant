@@ -28,7 +28,9 @@ ENV DJANGO_SETTINGS_MODULE=config.settings
 # Run with gunicorn
 CMD sh -c "\
     echo '=== Running migrations ===' && \
-    python manage.py migrate --fake-initial && \
+    python manage.py migrate --noinput && \
+    echo '=== Ingesting data ===' && \
+    python manage.py ingest_data --file /app/data/properties.csv || true && \
     echo '=== Starting gunicorn on port '\$PORT' ===' && \
     exec gunicorn config.wsgi:application --bind 0.0.0.0:\$PORT --workers 1 --timeout 120 --log-level info \
 "
