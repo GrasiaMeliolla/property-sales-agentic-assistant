@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: proplens-postgres
+    environment:
+      POSTGRES_USER: proplens
+      POSTGRES_PASSWORD: proplens123
+      POSTGRES_DB: proplens
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proplens -d proplens"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: proplens-backend
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=proplens
+      - POSTGRES_PASSWORD=proplens123
+      - POSTGRES_DB=proplens
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key-change-in-production}
+      - DEBUG=true
+      - ALLOWED_HOSTS=localhost,127.0.0.1,backend
+      - CHROMA_PERSIST_DIRECTORY=/app/chroma_data
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma_data:/app/chroma_data
+      - "./Property sales agent - Challenge.csv:/app/data/properties.csv:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: proplens-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

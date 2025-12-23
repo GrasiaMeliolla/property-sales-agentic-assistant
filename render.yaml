@@ -1,0 +1,54 @@
+databases:
+  - name: proplens-db
+    databaseName: proplens
+    user: proplens
+    plan: free
+    region: singapore
+
+services:
+  - type: web
+    name: proplens-backend
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: |
+      cd backend && pip install -r requirements.txt
+    startCommand: |
+      cd backend && python manage.py migrate --fake-initial && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings
+      - key: DATABASE_URL
+        fromDatabase:
+          name: proplens-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "false"
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com,localhost"
+    rootDir: ./
+
+  - type: web
+    name: proplens-frontend
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: cd frontend && npm install && npm run build
+    startCommand: cd frontend && npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: proplens-backend
+          property: host
+    rootDir: ./
