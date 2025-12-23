@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
+  // Remove standalone for Vercel deployment
+  // output: "standalone",
 };
 
 export default nextConfig;
