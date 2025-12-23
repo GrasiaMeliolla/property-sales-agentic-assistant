@@ -4,5 +4,11 @@ nixPkgs = ["python311", "postgresql"]
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
 
+[phases.build]
+cmds = ["python manage.py collectstatic --noinput || true"]
+
 [start]
 cmd = "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
+
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.11"
