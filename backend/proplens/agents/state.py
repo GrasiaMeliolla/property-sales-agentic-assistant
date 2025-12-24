@@ -22,6 +22,7 @@ class AgentState(TypedDict, total=False):
     preferences: Dict[str, Any]
     lead_info: Dict[str, Any]
     intent: str
+    needs_web_search: bool  # Flag from intent classification for web search
     recommended_properties: List[PropertyMatch]
     selected_property: Optional[PropertyMatch]
     sql_results: Optional[List[Dict]]

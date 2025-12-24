@@ -2,13 +2,14 @@
 import json
 import re
 import logging
-from typing import Dict, Any, Optional, List, AsyncGenerator
+from typing import Dict, Any, Optional, List, AsyncGenerator, Literal
 
 from django.conf import settings
 from asgiref.sync import sync_to_async
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
+from pydantic import BaseModel, Field
 
 from proplens.agents.state import AgentState, PropertyMatch
 from proplens.agents.prompts import (
@@ -25,6 +26,34 @@ from proplens.tools.sql_tool import sql_tool
 from proplens.tools.web_search import web_search_tool
 
 logger = logging.getLogger(__name__)
+
+
+class IntentClassification(BaseModel):
+    """Schema for intent classification using function calling."""
+
+    intent: Literal[
+        "greeting",
+        "gathering_preferences",
+        "searching_properties",
+        "answering_question",
+        "booking_visit",
+        "collecting_lead_info",
+        "general_conversation"
+    ] = Field(
+        description="The classified intent of the user message"
+    )
+    confidence: float = Field(
+        description="Confidence score between 0 and 1",
+        ge=0,
+        le=1
+    )
+    reasoning: str = Field(
+        description="Brief explanation for the classification"
+    )
+    needs_web_search: bool = Field(
+        default=False,
+        description="Whether the question requires external web search (e.g., about schools, transport, neighborhood)"
+    )
 
 
 def extract_json(text: str) -> dict:
@@ -103,7 +132,7 @@ class PropertySalesAgent:
         return workflow.compile()
 
     def _classify_intent(self, state: AgentState) -> AgentState:
-        """Classify user intent."""
+        """Classify user intent using function calling for reliable structured output."""
         message = state.get("user_message", "")
         messages_history = state.get("messages", [])
 
@@ -112,24 +141,50 @@ class PropertySalesAgent:
             recent = messages_history[-4:] if len(messages_history) > 4 else messages_history
             context = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
 
-        prompt = INTENT_CLASSIFICATION_PROMPT.format(message=message, context=context)
-        response = self.llm.invoke([HumanMessage(content=prompt)])
-        intent = response.content.strip().lower().replace(".", "").replace(",", "")
+        # Use structured output with function calling
+        intent_classifier = self.llm.with_structured_output(IntentClassification)
 
-        valid_intents = [
-            "greeting", "gathering_preferences", "searching_properties",
-            "answering_question", "booking_visit", "collecting_lead_info",
-            "general_conversation"
-        ]
+        classification_prompt = f"""Classify the user's intent for a property sales assistant.
 
-        found_intent = "general_conversation"
-        for valid in valid_intents:
-            if valid in intent:
-                found_intent = valid
-                break
+User message: "{message}"
 
-        logger.info(f"Classified intent: {found_intent}")
-        state["intent"] = found_intent
+Conversation context:
+{context}
+
+Intent definitions:
+- greeting: Greetings like hello, hi, halo, hai
+- gathering_preferences: User mentions city, budget, bedrooms, or property preferences
+- searching_properties: User asks to see/find/show properties
+- answering_question: User asks specific questions about a property, location, amenities, schools, transport, neighborhood
+- booking_visit: User wants to book/visit/schedule viewing (yes, sure, book it, I want, saya mau, mau dong, iya, boleh)
+- collecting_lead_info: User provides contact info (name, email, phone) or message contains @
+- general_conversation: Other casual conversation
+
+Priority rules:
+1. If message contains @, likely collecting_lead_info
+2. If message is a QUESTION about property details, schools, transport, neighborhood → answering_question
+3. Affirmative responses after property shown (yes, ok, mau, want, book) → booking_visit
+4. Mentions of city/budget/bedrooms → gathering_preferences
+
+Set needs_web_search=true if the question asks about:
+- Schools, education, universities nearby
+- Transportation, MRT, bus, public transport
+- Neighborhood, area, surroundings
+- Restaurants, shopping, amenities nearby
+- Safety, crime rates
+- Any external information not in property database"""
+
+        try:
+            result = intent_classifier.invoke([HumanMessage(content=classification_prompt)])
+            state["intent"] = result.intent
+            state["needs_web_search"] = result.needs_web_search
+            logger.info(f"Classified intent: {result.intent} (confidence: {result.confidence}, "
+                       f"web_search: {result.needs_web_search}, reason: {result.reasoning})")
+        except Exception as e:
+            logger.error(f"Intent classification error: {e}")
+            state["intent"] = "general_conversation"
+            state["needs_web_search"] = False
+
         return state
 
     def _route_by_intent(self, state: AgentState) -> str:
@@ -223,18 +278,37 @@ class PropertySalesAgent:
         sql_result = sql_tool.query(message)
         state["sql_results"] = sql_result.get("results")
 
-        web_keywords = ["near", "school", "transport", "area", "neighborhood", "around"]
-        needs_web_search = any(kw in message.lower() for kw in web_keywords)
+        # Use the needs_web_search flag from intent classification (function calling)
+        needs_web_search = state.get("needs_web_search", False)
 
         if needs_web_search and settings.TAVILY_API_KEY:
             project_name = None
             properties = state.get("recommended_properties", [])
             if properties:
-                project_name = properties[0].get("project_name")
-            web_results = web_search_tool.search_context(message, project_name)
+                if isinstance(properties[0], dict):
+                    project_name = properties[0].get("project_name")
+                elif hasattr(properties[0], "project_name"):
+                    project_name = properties[0].project_name
+
+            # Get city from preferences or property for better search context
+            city = state.get("preferences", {}).get("city")
+            if not city and properties:
+                prop = properties[0]
+                city = prop.get("city") if isinstance(prop, dict) else getattr(prop, "city", None)
+
+            # Build a more specific search query
+            search_query = message
+            if project_name:
+                search_query = f"{project_name} {city or ''} {message}"
+
+            logger.info(f"Performing web search: {search_query}")
+            web_results = web_search_tool.search_context(search_query, project_name)
             state["web_search_results"] = web_results
+            logger.info(f"Web search results: {web_results[:200] if web_results else 'None'}...")
         else:
             state["web_search_results"] = None
+            if needs_web_search and not settings.TAVILY_API_KEY:
+                logger.warning("Web search needed but TAVILY_API_KEY not set")
 
         return state
 
@@ -410,6 +484,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
             "response": "",
             "booking_confirmed": False,
             "needs_more_info": False,
+            "needs_web_search": False,
             "missing_preferences": [],
             "error": None
         }
@@ -457,6 +532,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
             "response": "",
             "booking_confirmed": False,
             "needs_more_info": False,
+            "needs_web_search": False,
             "missing_preferences": [],
             "error": None
         }
