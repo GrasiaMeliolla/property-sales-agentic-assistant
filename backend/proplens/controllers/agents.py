@@ -135,6 +135,7 @@ class AgentsController:
         conv_id_uuid = data.conversation_id
         prev_recommended = recommended
         prev_booking_project = booking_project
+        prev_lead = lead
 
         def generate():
             full_response = ""
@@ -148,7 +149,7 @@ class AgentsController:
                     conversation_id=conv_id,
                     messages_history=messages_history,
                     preferences=prefs,
-                    lead_info=lead,
+                    lead_info=prev_lead,
                     recommended_properties=prev_recommended,
                     booking_project=prev_booking_project
                 ):
@@ -217,6 +218,28 @@ class AgentsController:
                             "booking_project": booking_project
                         }
                     )
+
+                    # Save lead and create booking if confirmed
+                    if final_result.get("booking_confirmed"):
+                        lead_info_result = final_result.get("lead_info", {})
+                        if lead_info_result.get("email"):
+                            saved_lead = conversation_service.get_or_create_lead(
+                                conv_id_uuid, lead_info_result
+                            )
+
+                            if final_result.get("preferences"):
+                                conversation_service.update_lead_preferences(
+                                    saved_lead.id, final_result["preferences"]
+                                )
+
+                            bp = final_result.get("booking_project") or prev_booking_project
+                            if bp:
+                                project = conversation_service.find_project_by_name(bp)
+                                if project:
+                                    conversation_service.create_booking(
+                                        lead_id=saved_lead.id,
+                                        project_id=project.id
+                                    )
 
                 loop.close()
 
