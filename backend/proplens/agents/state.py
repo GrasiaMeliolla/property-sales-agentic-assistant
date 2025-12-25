@@ -23,6 +23,7 @@ class AgentState(TypedDict, total=False):
     lead_info: Dict[str, Any]
     intent: str
     needs_web_search: bool  # Flag from intent classification for web search
+    needs_property_first: bool  # Flag when user provides name before property context
     recommended_properties: List[PropertyMatch]
     selected_property: Optional[PropertyMatch]
     sql_results: Optional[List[Dict]]

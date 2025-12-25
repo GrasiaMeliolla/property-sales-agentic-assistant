@@ -361,9 +361,16 @@ Set needs_web_search=true if the question asks about:
         if not state.get("booking_project"):
             properties = state.get("recommended_properties", [])
             if properties:
-                state["booking_project"] = properties[0].get("project_name")
+                if isinstance(properties[0], dict):
+                    state["booking_project"] = properties[0].get("project_name")
+                elif hasattr(properties[0], "project_name"):
+                    state["booking_project"] = properties[0].project_name
 
-        if current_lead.get("first_name") and current_lead.get("email"):
+        # Only confirm booking if we have a property AND name + email
+        has_property = state.get("booking_project") or state.get("recommended_properties")
+        has_complete_info = current_lead.get("first_name") and current_lead.get("email")
+
+        if has_property and has_complete_info:
             state["booking_confirmed"] = True
             state["missing_preferences"] = []
         else:
@@ -374,6 +381,9 @@ Set needs_web_search=true if the question asks about:
             if not current_lead.get("email"):
                 missing.append("email")
             state["missing_preferences"] = missing
+            # Flag that we need property preferences first
+            if not has_property:
+                state["needs_property_first"] = True
 
         return state
 
@@ -439,9 +449,21 @@ Apologize and ask if they'd like to adjust their requirements or explore differe
         elif intent in ("booking_visit", "collecting_lead_info"):
             lead_info = state.get("lead_info", {})
             missing = state.get("missing_preferences", [])
-            property_name = state.get("booking_project", "the selected property")
+            property_name = state.get("booking_project")
 
-            if state.get("booking_confirmed"):
+            # Handle case when user provides name but no property context yet
+            if state.get("needs_property_first") or not property_name:
+                name = lead_info.get('first_name', '')
+                prompt = f"""The user has introduced themselves{' as ' + name if name else ''}.
+Lead info collected: {json.dumps(lead_info)}
+
+Thank them warmly for introducing themselves, then ask about their property preferences:
+- Which city are they interested in?
+- What's their budget range?
+- How many bedrooms do they need?
+
+Be friendly and guide them to find the perfect property."""
+            elif state.get("booking_confirmed"):
                 prompt = f"""Booking confirmed!
 Property: {property_name}
 Name: {lead_info.get('first_name')} {lead_info.get('last_name', '')}
@@ -634,11 +656,20 @@ Ask about missing info in a friendly way."""
         elif intent in ("booking_visit", "collecting_lead_info"):
             lead_info = state.get("lead_info", {})
             missing = state.get("missing_preferences", [])
-            if state.get("booking_confirmed"):
-                prompt = f"Confirm booking for {state.get('booking_project')}. Lead: {lead_info}"
+            property_name = state.get("booking_project")
+
+            # Handle case when user provides name but no property context yet
+            if state.get("needs_property_first") or not property_name:
+                name = lead_info.get('first_name', '')
+                prompt = f"""The user has introduced themselves{' as ' + name if name else ''}.
+Lead info: {json.dumps(lead_info)}
+
+Thank them warmly, then ask about property preferences (city, budget, bedrooms)."""
+            elif state.get("booking_confirmed"):
+                prompt = f"Confirm booking for {property_name}. Lead: {lead_info}"
             else:
                 prompt = BOOKING_PROMPT.format(
-                    property_name=state.get("booking_project", "selected property"),
+                    property_name=property_name,
                     lead_info=json.dumps(lead_info),
                     missing_info=', '.join(missing) or "none"
                 )
