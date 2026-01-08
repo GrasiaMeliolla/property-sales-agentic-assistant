@@ -22,14 +22,38 @@ export default function ChatWidget() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  const scrollToBottom = useCallback((force = false) => {
+    // Only scroll if user hasn't scrolled up, or if forced (new user message)
+    if (!userScrolledUp || force) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [userScrolledUp]);
+
+  // Check if user has scrolled up from bottom
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const threshold = 100; // pixels from bottom
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    setUserScrolledUp(!isNearBottom);
+  }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    // Only auto-scroll for new messages, not during streaming updates
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.role === "user") {
+      // Always scroll when user sends a message
+      scrollToBottom(true);
+      setUserScrolledUp(false);
+    } else if (!lastMessage?.isStreaming) {
+      // Scroll when streaming completes
+      scrollToBottom();
+    }
+  }, [messages, scrollToBottom]);
 
   const initConversation = useCallback(async () => {
     try {
@@ -40,7 +64,7 @@ export default function ChatWidget() {
           id: "welcome",
           role: "assistant",
           content:
-            "Hello! I'm **Luna**, your property assistant at Silver Land Properties. I'm here to help you find your perfect property. What kind of property are you looking for?",
+            "Hello! I'm **Silvy**, your property assistant at Silver Land Properties. I'm here to help you find your perfect property. What kind of property are you looking for?",
         },
       ]);
     } catch (err) {
@@ -170,7 +194,7 @@ export default function ChatWidget() {
               <Building2 className="w-5 h-5" />
             </div>
             <div className="flex-1">
-              <h3 className="font-semibold text-sm">Luna</h3>
+              <h3 className="font-semibold text-sm">Silvy</h3>
               <p className="text-xs text-white/80">Silver Land Properties</p>
             </div>
             <button
@@ -182,7 +206,11 @@ export default function ChatWidget() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-silver-50 scrollbar-thin min-h-0">
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-y-auto p-4 space-y-4 bg-silver-50 scrollbar-thin min-h-0"
+          >
             {messages.map((message) => (
               <div
                 key={message.id}

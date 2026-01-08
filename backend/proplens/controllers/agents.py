@@ -72,15 +72,24 @@ class AgentsController:
                     data.conversation_id, lead_info_result
                 )
 
-                if result.get("preferences"):
+                # Build complete preferences including booked property
+                prefs_to_save = result.get("preferences", {}).copy()
+                bp = result.get("booking_project")
+                if bp:
+                    prefs_to_save["booked_property"] = bp
+
+                # Save only explicitly interested properties
+                interested = result.get("interested_properties", [])
+                if interested:
+                    prefs_to_save["interested_properties"] = interested
+
+                if prefs_to_save:
                     conversation_service.update_lead_preferences(
-                        lead.id, result["preferences"]
+                        lead.id, prefs_to_save
                     )
 
-                if result.get("booking_project"):
-                    project = conversation_service.find_project_by_name(
-                        result["booking_project"]
-                    )
+                if bp:
+                    project = conversation_service.find_project_by_name(bp)
                     if project:
                         conversation_service.create_booking(
                             lead_id=lead.id,
@@ -205,6 +214,7 @@ class AgentsController:
 
                     # Save all context including recommended properties
                     recommended = final_result.get("recommended_properties", [])
+                    interested = final_result.get("interested_properties", [])
                     booking_project = None
                     if recommended:
                         booking_project = recommended[0].get("project_name") if isinstance(recommended[0], dict) else None
@@ -215,6 +225,7 @@ class AgentsController:
                             "preferences": final_result.get("preferences", {}),
                             "lead_info": final_result.get("lead_info", {}),
                             "recommended_properties": recommended,
+                            "interested_properties": interested,
                             "booking_project": booking_project
                         }
                     )
@@ -227,12 +238,21 @@ class AgentsController:
                                 conv_id_uuid, lead_info_result
                             )
 
-                            if final_result.get("preferences"):
+                            # Build complete preferences including booked property
+                            prefs_to_save = final_result.get("preferences", {}).copy()
+                            bp = final_result.get("booking_project") or prev_booking_project
+                            if bp:
+                                prefs_to_save["booked_property"] = bp
+
+                            # Save only explicitly interested properties (not all shown)
+                            if interested:
+                                prefs_to_save["interested_properties"] = interested
+
+                            if prefs_to_save:
                                 conversation_service.update_lead_preferences(
-                                    saved_lead.id, final_result["preferences"]
+                                    saved_lead.id, prefs_to_save
                                 )
 
-                            bp = final_result.get("booking_project") or prev_booking_project
                             if bp:
                                 project = conversation_service.find_project_by_name(bp)
                                 if project:

@@ -142,7 +142,7 @@ class PropertySalesAgent:
     def _handle_greeting(self, state: AgentState) -> AgentState:
         """Handle greeting intent."""
         state["response"] = (
-            "Hello! I'm **Luna**, your property assistant at Silver Land Properties. "
+            "Hello! I'm **Silvy**, your property assistant at Silver Land Properties. "
             "I'm here to help you find your perfect home!\n\n"
             "To get started, could you tell me:\n"
             "- Which **city** are you interested in?\n"
@@ -333,7 +333,7 @@ Current preferences: {json.dumps(prefs)}
 We still need: {', '.join(missing)}
 
 Ask about the missing information in a friendly, conversational way.
-Remember to introduce yourself as Luna if this is early in the conversation."""
+Remember to introduce yourself as Silvy if this is early in the conversation."""
             else:
                 prompt = """No properties found matching the criteria.
 Apologize and ask if they'd like to adjust their requirements or explore different locations."""

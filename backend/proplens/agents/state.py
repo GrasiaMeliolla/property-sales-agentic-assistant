@@ -24,6 +24,7 @@ class AgentState(TypedDict, total=False):
     intent: str
     needs_web_search: bool  # Flag from intent classification for web search
     needs_property_first: bool  # Flag when user provides name before property context
+    interested_properties: List[str]  # Properties user explicitly expressed interest in
     recommended_properties: List[PropertyMatch]
     selected_property: Optional[PropertyMatch]
     sql_results: Optional[List[Dict]]

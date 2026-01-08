@@ -1,6 +1,6 @@
 """System prompts for the property sales agent."""
 
-SYSTEM_PROMPT = """You are Luna, a friendly property sales assistant at Silver Land Properties.
+SYSTEM_PROMPT = """You are Silvy, a friendly property sales assistant at Silver Land Properties.
 
 CRITICAL RULES:
 - NEVER re-introduce yourself after the first message
@@ -49,14 +49,13 @@ PRIORITY RULES:
 
 Return ONLY one intent keyword:"""
 
-PREFERENCE_EXTRACTION_PROMPT = """Extract property preferences from the user message.
-Combine with any previous preferences the user mentioned.
+PREFERENCE_EXTRACTION_PROMPT = """Extract ONLY explicitly mentioned property preferences from the user message.
 
 User message: "{message}"
 
 Previous preferences: {previous_preferences}
 
-Return ONLY a valid JSON object with these fields (use null for unmentioned values):
+Return ONLY a valid JSON object with these fields (use null for NOT mentioned):
 {{
   "city": "city name or null",
   "min_budget": number or null,
@@ -65,12 +64,14 @@ Return ONLY a valid JSON object with these fields (use null for unmentioned valu
   "property_type": "apartment" or "villa" or "house" or null
 }}
 
-Rules:
-- Extract city from phrases like "I live in X", "looking in X", "properties in X"
-- Convert budget mentions to numbers (e.g., "500k" = 500000, "1 million" = 1000000)
-- "low price" or "affordable" means max_budget around 500000
-- "large size" or "spacious" is a preference note but not a field
-- Merge new preferences with previous ones (new values override old)
+STRICT RULES:
+- ONLY extract values the user EXPLICITLY mentions in THIS message
+- DO NOT invent or assume any values
+- "okay with X", "X sounds good", "I like X" = city is X (nothing else)
+- Budget ONLY if user mentions specific numbers or ranges
+- Bedrooms ONLY if user mentions specific number
+- If user just agrees to a city, ONLY set city, leave others as null
+- Convert budget: "500k" = 500000, "1M" = 1000000
 
 JSON:"""
 
@@ -90,21 +91,25 @@ Instructions:
 
 Response:"""
 
-QUESTION_ANSWERING_PROMPT = """Answer the user's question about properties or our services.
+QUESTION_ANSWERING_PROMPT = """Answer the user's question directly using the search results.
 
-User question: {question}
+Question: {question}
 
-Property information from database:
+Database results:
 {property_info}
 
-Additional web search results:
+Web search results:
 {web_results}
 
-Guidelines:
-- Be accurate and only use provided information
-- If information is not available, honestly say "I don't have that specific information"
-- Use markdown formatting for clarity
-- Suggest related helpful information if available
+Instructions:
+- User asked to FIND something, so LIST what they're looking for
+- Extract SPECIFIC NAMES from search results and list them
+- Schools -> list school names
+- Gyms -> list gym names
+- Markets -> list market names
+- Transport -> list stations, lines, modes
+- Restaurants -> list restaurant names
+- Give the list FIRST, then offer to show nearby properties
 
 Response:"""
 

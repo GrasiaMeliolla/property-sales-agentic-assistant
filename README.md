@@ -47,14 +47,16 @@ PropLens is an AI-powered property sales assistant that:
 | Feature | Description |
 |---------|-------------|
 | **Multi-turn Conversation** | Maintains context across the entire conversation |
-| **Preference Extraction** | Intelligently extracts city, budget, bedrooms from natural language |
+| **Preference Extraction** | Extracts city, budget, bedrooms from natural language (strict, no hallucination) |
 | **Property Search** | Text-to-SQL powered search with Django ORM fallback |
-| **Web Search Integration** | Tavily-powered search for neighborhood info, schools, transport |
-| **Lead Management** | Captures and stores lead information |
-| **Booking System** | Records property visit bookings |
+| **Web Search Integration** | Google Search + Tavily for schools, transport, neighborhood info |
+| **Smart Query Extraction** | LLM extracts optimal search query from user message |
+| **Property Interest Tracking** | Detects when user mentions specific property interest for CRM |
+| **Lead Management** | Captures contact info with preferences and interested properties |
+| **Booking System** | Records property visit bookings with full context |
 | **Multilingual Support** | Responds in English and Indonesian |
-| **Streaming Responses** | Real-time SSE streaming for better UX |
-| **Function Calling** | Reliable intent classification using OpenAI function calling |
+| **Streaming Responses** | Real-time SSE streaming with smart scroll behavior |
+| **Function Calling** | Reliable intent classification using OpenAI structured output |
 
 ---
 
@@ -84,8 +86,8 @@ flowchart TB
 
         subgraph Tools["Tools Layer"]
             SQL[SQL Tool<br/>Vanna + ORM]
-            WS[Web Search<br/>Tavily]
-            PE[Preference Extractor]
+            WS[Web Search<br/>Google + Tavily]
+            QE[Query Extractor<br/>LLM]
         end
 
         subgraph Services["Services Layer"]
@@ -207,10 +209,18 @@ class IntentClassification(BaseModel):
         "collecting_lead_info",
         "general_conversation"
     ]
-    confidence: float      # 0.0 - 1.0
-    reasoning: str         # Explanation for classification
-    needs_web_search: bool # Flag for external search
+    confidence: float           # 0.0 - 1.0
+    reasoning: str              # Explanation for classification
+    needs_web_search: bool      # Flag for external search
+    interested_property: str    # Property user expresses interest in
 ```
+
+### Property Interest Tracking
+
+The system tracks properties users explicitly express interest in:
+- "I like The OWO" -> `interested_property = "The OWO"`
+- "Tell me about Damac Tower" -> `interested_property = "Damac Tower"`
+- These are saved to `lead.preferences.interested_properties` for CRM follow-up
 
 ### Intent Types
 
@@ -223,6 +233,25 @@ class IntentClassification(BaseModel):
 | `booking_visit` | "Yes, book it", "I want to visit", "Mau dong" | Initiate booking flow |
 | `collecting_lead_info` | "John, john@email.com" | Extract contact details |
 | `general_conversation` | Other queries | Contextual response |
+
+### Web Search Architecture
+
+```mermaid
+flowchart LR
+    UQ[User Question] --> QE[Query Extractor<br/>LLM]
+    QE --> |"best elementary schools dubai"| GS[Google Search]
+    GS --> |10 snippets| CTX[Context Builder]
+    CTX --> |snippets < 500 chars| TE[Tavily Extract]
+    TE --> CTX
+    CTX --> LLM[Response LLM]
+```
+
+**Flow:**
+1. User asks: "before I choose, give me options of nearest elementary school"
+2. LLM extracts optimal query: "best elementary schools dubai"
+3. Google Search returns 10 results with snippets
+4. Snippets are used as context for response generation
+5. Tavily extracts full page content only if snippets are insufficient
 
 ---
 
@@ -238,7 +267,8 @@ class IntentClassification(BaseModel):
 | **LangChain** | LLM integration |
 | **OpenAI GPT-4o-mini** | Language model |
 | **Vanna AI** | Text-to-SQL (with ChromaDB) |
-| **Tavily** | Web search API |
+| **Google Custom Search** | URL discovery for web search |
+| **Tavily** | Content extraction from URLs |
 | **PostgreSQL** | Database |
 | **Gunicorn** | WSGI server |
 
@@ -294,8 +324,13 @@ proplens/
 │   │   ├── models.py            # Django ORM models
 │   │   └── schemas.py           # Pydantic schemas
 │   │
-│   ├── data/
-│   │   └── properties.csv       # Property data (1068 listings)
+│   ├── tests/
+│   │   ├── conftest.py          # Pytest fixtures
+│   │   ├── test_models.py       # Django model tests
+│   │   ├── test_services.py     # Service layer tests
+│   │   ├── test_api.py          # API endpoint tests
+│   │   ├── test_orchestrator.py # Agent logic tests
+│   │   └── test_tools.py        # SQL/web search tests
 │   │
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -310,11 +345,6 @@ proplens/
 │   │
 │   ├── Dockerfile
 │   └── package.json
-│
-├── tests/
-│   ├── test_api.py              # API endpoint tests
-│   ├── test_agent.py            # Agent workflow tests
-│   └── test_conversation.py     # Conversation flow tests
 │
 ├── docker-compose.yml
 └── README.md
@@ -593,7 +623,10 @@ CREATE TABLE proplens_message (
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | Yes | OpenAI API key for GPT-4o-mini |
-| `TAVILY_API_KEY` | No | Tavily API key for web search |
+| `TAVILY_API_KEY` | No | Tavily API key for content extraction |
+| `GOOGLE_SEARCH_API_KEY` | No | Google Custom Search API key |
+| `GOOGLE_SEARCH_CSE_ID` | No | Google Custom Search Engine ID |
+| `GOOGLE_SEARCH_ENABLED` | No | Set to "true" to enable Google Search |
 | `DATABASE_URL` | Yes* | PostgreSQL connection string |
 | `POSTGRES_HOST` | Yes* | Database host |
 | `POSTGRES_PORT` | Yes* | Database port (default: 5432) |
@@ -657,7 +690,8 @@ CREATE TABLE proplens_message (
 ### Run All Tests
 ```bash
 cd backend
-pytest
+pip install -r requirements-test.txt
+pytest tests/ -v
 ```
 
 ### Run with Coverage
@@ -667,14 +701,20 @@ pytest --cov=proplens --cov-report=html
 
 ### Test Categories
 ```bash
-# API tests
+# Model tests
+pytest tests/test_models.py -v
+
+# Service tests
+pytest tests/test_services.py -v
+
+# API endpoint tests
 pytest tests/test_api.py -v
 
-# Agent workflow tests
-pytest tests/test_agent.py -v
+# Agent orchestrator tests
+pytest tests/test_orchestrator.py -v
 
-# Conversation flow tests
-pytest tests/test_conversation.py -v
+# Tool tests (SQL, Web Search)
+pytest tests/test_tools.py -v
 ```
 
 ### Sample Test Conversation
@@ -692,7 +732,7 @@ def test_full_booking_flow():
         "conversation_id": conv_id,
         "message": "Hello"
     })
-    assert "Luna" in response.json()["response"]
+    assert "Silvy" in response.json()["response"]
 
     # 3. Provide preferences
     response = client.post("/api/agents/chat", json={
@@ -792,36 +832,36 @@ class IntentClassification(BaseModel):
 ### English Flow
 ```
 User: Hello
-Luna: Hello! I'm Luna, your property assistant at Silver Land Properties.
+Silvy: Hello! I'm Silvy, your property assistant at Silver Land Properties.
       What city are you interested in?
 
 User: I'm looking for something in Dubai, budget around 500k, 2 bedrooms
-Luna: I found some great options for you:
+Silvy: I found some great options for you:
       • Marina Heights: $450,000, 2 bed, Dubai
       • Palm Residences: $480,000, 2 bed, Dubai
       Would you like to book a visit?
 
 User: What schools are near Marina Heights?
-Luna: Based on my research, there are several schools near Marina Heights...
+Silvy: Based on my research, there are several schools near Marina Heights...
 
 User: Yes, book Marina Heights. I'm John, john@email.com
-Luna: Booking confirmed! Our representative will contact you at john@email.com.
+Silvy: Booking confirmed! Our representative will contact you at john@email.com.
 ```
 
 ### Indonesian Flow
 ```
 User: Halo
-Luna: Halo! Saya Luna, asisten properti di Silver Land Properties.
+Silvy: Halo! Saya Silvy, asisten properti di Silver Land Properties.
       Kota mana yang Anda minati?
 
 User: Saya cari apartemen di Jakarta budget 1 miliar
-Luna: Saya menemukan beberapa pilihan untuk Anda di Jakarta...
+Silvy: Saya menemukan beberapa pilihan untuk Anda di Jakarta...
 
 User: Mau dong yang pertama
-Luna: Baik! Boleh saya minta nama dan email untuk booking?
+Silvy: Baik! Boleh saya minta nama dan email untuk booking?
 
 User: Budi, budi@email.com
-Luna: Booking berhasil! Tim kami akan menghubungi Anda di budi@email.com.
+Silvy: Booking berhasil! Tim kami akan menghubungi Anda di budi@email.com.
 ```
 
 ---

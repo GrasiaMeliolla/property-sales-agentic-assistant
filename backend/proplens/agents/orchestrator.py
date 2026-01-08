@@ -54,6 +54,10 @@ class IntentClassification(BaseModel):
         default=False,
         description="Whether the question requires external web search (e.g., about schools, transport, neighborhood)"
     )
+    interested_property: Optional[str] = Field(
+        default=None,
+        description="Name of specific property user expresses interest in (e.g., 'The OWO', 'Damac Tower'). Only set if user explicitly mentions a property name."
+    )
 
 
 def extract_json(text: str) -> dict:
@@ -136,6 +140,8 @@ class PropertySalesAgent:
         message = state.get("user_message", "")
         messages_history = state.get("messages", [])
 
+        print(f"[INTENT] Classifying message: '{message}'", flush=True)
+
         context = "No previous context"
         if messages_history:
             recent = messages_history[-4:] if len(messages_history) > 4 else messages_history
@@ -153,35 +159,58 @@ Conversation context:
 
 Intent definitions:
 - greeting: Greetings like hello, hi, halo, hai
-- gathering_preferences: User mentions city, budget, bedrooms, or property preferences
-- searching_properties: User asks to see/find/show properties
-- answering_question: User asks specific questions about a property, location, amenities, schools, transport, neighborhood
-- booking_visit: User wants to book/visit/schedule viewing (yes, sure, book it, I want, saya mau, mau dong, iya, boleh)
+- gathering_preferences: User expresses interest in a city/location, mentions budget, bedrooms
+- searching_properties: User asks to see/find/show properties, or wants property options
+- answering_question: User asks about schools, transport, neighborhood, amenities (external info)
+- booking_visit: User wants to book/visit/schedule viewing, OR selects a specific property
 - collecting_lead_info: User provides contact info (name, email, phone) or message contains @
 - general_conversation: Other casual conversation
 
-Priority rules:
-1. If message contains @, likely collecting_lead_info
-2. If message is a QUESTION about property details, schools, transport, neighborhood → answering_question
-3. Affirmative responses after property shown (yes, ok, mau, want, book) → booking_visit
-4. Mentions of city/budget/bedrooms → gathering_preferences
+CRITICAL PRIORITY RULES (in order):
+1. If message contains @ → collecting_lead_info
+2. If context shows properties were just listed AND user mentions a PROPERTY NAME → booking_visit
+   Examples: "JDS Group", "yes jds group", "the first one", "I want Damac Tower"
+3. Affirmative responses after property shown (yes, ok, mau, want, book, iya, boleh) → booking_visit
+4. Questions about schools/transport/neighborhood → answering_question with needs_web_search=true
+5. "show me", "give me options", "list properties", "what properties" → searching_properties
+6. Mentions city/budget/bedrooms without asking to see properties → gathering_preferences
 
-Set needs_web_search=true if the question asks about:
-- Schools, education, universities nearby
-- Transportation, MRT, bus, public transport
-- Neighborhood, area, surroundings
-- Restaurants, shopping, amenities nearby
-- Safety, crime rates
-- Any external information not in property database"""
+BOOKING DETECTION - VERY IMPORTANT:
+When properties were shown in context and user responds with:
+- A property name (full or partial): "JDS Group", "jds", "The OWO" → booking_visit
+- "yes" + property name: "yes jds group" → booking_visit
+- Selection phrases: "the first one", "that one", "I like it" → booking_visit
+- Affirmatives: "yes", "ok", "sure", "book it", "I want it" → booking_visit
+
+Set needs_web_search=true ONLY for questions about schools, transport, neighborhood.
+
+PROPERTY INTEREST DETECTION:
+Set interested_property to the property name user mentions.
+Examples:
+- "JDS Group" (after properties shown) → intent=booking_visit, interested_property="JDS Group"
+- "yes jds group" → intent=booking_visit, interested_property="JDS Group"
+- "I like The OWO" → intent=booking_visit, interested_property="The OWO" """
 
         try:
             result = intent_classifier.invoke([HumanMessage(content=classification_prompt)])
             state["intent"] = result.intent
             state["needs_web_search"] = result.needs_web_search
-            logger.info(f"Classified intent: {result.intent} (confidence: {result.confidence}, "
-                       f"web_search: {result.needs_web_search}, reason: {result.reasoning})")
+
+            # Track explicitly interested properties
+            if result.interested_property:
+                interested = state.get("interested_properties", [])
+                if result.interested_property not in interested:
+                    interested.append(result.interested_property)
+                state["interested_properties"] = interested
+                print(f"[INTENT] Interested in property: {result.interested_property}", flush=True)
+
+            print(f"[INTENT] Result: intent={result.intent}, confidence={result.confidence:.2f}, "
+                  f"needs_web_search={result.needs_web_search}", flush=True)
+            print(f"[INTENT] Reasoning: {result.reasoning}", flush=True)
         except Exception as e:
-            logger.error(f"Intent classification error: {e}")
+            print(f"[INTENT] ERROR: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             state["intent"] = "general_conversation"
             state["needs_web_search"] = False
 
@@ -191,15 +220,36 @@ Set needs_web_search=true if the question asks about:
         return state.get("intent", "general_conversation")
 
     def _handle_greeting(self, state: AgentState) -> AgentState:
-        """Handle greeting intent."""
-        state["response"] = (
-            "Hello! I'm **Luna**, your property assistant at Silver Land Properties. "
-            "I'm here to help you find your perfect home!\n\n"
-            "To get started, could you tell me:\n"
-            "- Which **city** are you interested in?\n"
-            "- What's your **budget range**?\n"
-            "- How many **bedrooms** do you need?"
-        )
+        """Handle greeting intent with natural LLM response."""
+        user_message = state.get("user_message", "")
+        messages_history = state.get("messages", [])
+
+        # Build context from recent messages
+        context = ""
+        if messages_history:
+            recent = messages_history[-4:] if len(messages_history) > 4 else messages_history
+            context = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+
+        prompt = f"""You are Silvy, a friendly and warm property assistant at Silver Land Properties.
+The user just greeted you with: "{user_message}"
+
+Previous conversation (if any):
+{context or "This is the start of the conversation."}
+
+Respond naturally to their greeting. Be warm, friendly, and conversational - not robotic.
+- Mirror their language style (formal/casual)
+- If they said their name, use it warmly
+- Introduce yourself briefly as Silvy from Silver Land Properties
+- Gently guide toward property preferences (city, budget, bedrooms) but don't make it feel like a checklist
+
+Keep your response concise (2-4 sentences) and natural."""
+
+        messages = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=prompt)
+        ]
+        response = self.llm.invoke(messages)
+        state["response"] = response.content
         return state
 
     def _gather_preferences(self, state: AgentState) -> AgentState:
@@ -237,7 +287,50 @@ Set needs_web_search=true if the question asks about:
 
     def _search_properties(self, state: AgentState) -> AgentState:
         """Search for properties matching preferences."""
-        prefs = state.get("preferences", {})
+        prefs = state.get("preferences", {}).copy()
+        user_message = state.get("user_message", "")
+
+        # Always check current message for city - user might have changed their mind
+        extract_prompt = f"""From this message, extract the city/location the user wants properties in.
+
+Message: "{user_message}"
+
+Return ONLY a JSON object: {{"city": "city name or null"}}
+If no specific city is mentioned in THIS message, return {{"city": null}}"""
+
+        try:
+            response = self.llm.invoke([HumanMessage(content=extract_prompt)])
+            location_data = extract_json(response.content)
+            new_city = location_data.get("city")
+            if new_city and new_city != "null":
+                prefs["city"] = new_city
+                print(f"[SEARCH] City from current message: {new_city}", flush=True)
+        except Exception as e:
+            print(f"[SEARCH] Failed to extract city: {e}", flush=True)
+
+        # If still no city, try conversation context
+        if not prefs.get("city"):
+            messages = state.get("messages", [])
+            if messages:
+                context_text = "\n".join([m.get('content', '') for m in messages[-4:]])
+                context_prompt = f"""From this conversation context, what city is the user interested in?
+
+Context:
+{context_text}
+
+Return ONLY: {{"city": "city name or null"}}"""
+                try:
+                    response = self.llm.invoke([HumanMessage(content=context_prompt)])
+                    location_data = extract_json(response.content)
+                    if location_data.get("city") and location_data["city"] != "null":
+                        prefs["city"] = location_data["city"]
+                        print(f"[SEARCH] City from context: {prefs['city']}", flush=True)
+                except Exception:
+                    pass
+
+        # Save updated prefs back to state so response generation can use it
+        state["preferences"] = prefs
+        print(f"[SEARCH] Searching with prefs: {prefs}", flush=True)
 
         results = sql_tool.search_properties(
             city=prefs.get("city"),
@@ -275,40 +368,64 @@ Set needs_web_search=true if the question asks about:
         """Answer specific questions about properties."""
         message = state.get("user_message", "")
 
+        print(f"[ANSWER] Processing question: '{message}'", flush=True)
+
         sql_result = sql_tool.query(message)
         state["sql_results"] = sql_result.get("results")
+        print(f"[ANSWER] SQL results: {len(sql_result.get('results', [])) if sql_result.get('results') else 0} rows", flush=True)
 
         # Use the needs_web_search flag from intent classification (function calling)
         needs_web_search = state.get("needs_web_search", False)
+        print(f"[ANSWER] needs_web_search={needs_web_search}, TAVILY_API_KEY={'SET' if settings.TAVILY_API_KEY else 'NOT SET'}", flush=True)
 
         if needs_web_search and settings.TAVILY_API_KEY:
-            project_name = None
+            # Only use property name if user explicitly mentioned it in their message
+            # Check if user refers to a specific property by name
+            interested_props = state.get("interested_properties", [])
             properties = state.get("recommended_properties", [])
-            if properties:
-                if isinstance(properties[0], dict):
-                    project_name = properties[0].get("project_name")
-                elif hasattr(properties[0], "project_name"):
-                    project_name = properties[0].project_name
 
-            # Get city from preferences or property for better search context
+            # Get the property name ONLY if user mentioned it or we detected interest
+            project_name = None
+            if interested_props:
+                # Use the most recently interested property
+                project_name = interested_props[-1]
+            else:
+                # Check if user's message contains a property name
+                message_lower = message.lower()
+                for prop in properties:
+                    prop_name = prop.get("project_name", "") if isinstance(prop, dict) else getattr(prop, "project_name", "")
+                    if prop_name and prop_name.lower() in message_lower:
+                        project_name = prop_name
+                        break
+
+            # Get city from preferences
             city = state.get("preferences", {}).get("city")
             if not city and properties:
                 prop = properties[0]
                 city = prop.get("city") if isinstance(prop, dict) else getattr(prop, "city", None)
 
-            # Build a more specific search query
-            search_query = message
-            if project_name:
-                search_query = f"{project_name} {city or ''} {message}"
+            print(f"[WEB_SEARCH] Question: '{message}', Project: {project_name}, City: {city}", flush=True)
 
-            logger.info(f"Performing web search: {search_query}")
-            web_results = web_search_tool.search_context(search_query, project_name)
-            state["web_search_results"] = web_results
-            logger.info(f"Web search results: {web_results[:200] if web_results else 'None'}...")
+            try:
+                # Pass the actual question + context (only property if explicitly mentioned)
+                web_results = web_search_tool.search_context(
+                    question=message,
+                    property_name=project_name,  # Will be None if user didn't mention specific property
+                    city=city
+                )
+                state["web_search_results"] = web_results
+                print(f"[WEB_SEARCH] Results length: {len(web_results) if web_results else 0}", flush=True)
+            except Exception as e:
+                print(f"[WEB_SEARCH] Error: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                state["web_search_results"] = None
         else:
             state["web_search_results"] = None
             if needs_web_search and not settings.TAVILY_API_KEY:
-                logger.warning("Web search needed but TAVILY_API_KEY not set")
+                print("[WEB_SEARCH] Skipped - TAVILY_API_KEY not set", flush=True)
+            elif not needs_web_search:
+                print("[WEB_SEARCH] Skipped - not needed for this query", flush=True)
 
         return state
 
@@ -316,13 +433,41 @@ Set needs_web_search=true if the question asks about:
         """Handle property visit booking."""
         properties = state.get("recommended_properties", [])
         lead_info = state.get("lead_info", {})
+        user_message = state.get("user_message", "").lower()
+        interested_props = state.get("interested_properties", [])
 
-        # Use existing booking_project or get from recommended properties
+        print(f"[BOOKING] Properties: {len(properties)}, interested: {interested_props}", flush=True)
+        print(f"[BOOKING] User message: '{user_message}'", flush=True)
+
+        # Priority 1: Use interested_property from intent classification
+        if interested_props and not state.get("booking_project"):
+            state["booking_project"] = interested_props[-1]
+            print(f"[BOOKING] Set booking_project from interested: {state['booking_project']}", flush=True)
+
+        # Priority 2: Try to match user message against recommended properties
+        if not state.get("booking_project") and properties:
+            for prop in properties:
+                prop_name = prop.get("project_name", "") if isinstance(prop, dict) else getattr(prop, "project_name", "")
+                if prop_name and prop_name.lower() in user_message:
+                    state["booking_project"] = prop_name
+                    print(f"[BOOKING] Matched property from message: {prop_name}", flush=True)
+                    break
+                # Also check partial match (e.g., "jds" matches "JDS Group - Miami")
+                if prop_name:
+                    words = user_message.split()
+                    for word in words:
+                        if len(word) > 2 and word in prop_name.lower():
+                            state["booking_project"] = prop_name
+                            print(f"[BOOKING] Partial match: '{word}' in '{prop_name}'", flush=True)
+                            break
+
+        # Priority 3: Default to first recommended property
         if not state.get("booking_project") and properties:
             if isinstance(properties[0], dict):
                 state["booking_project"] = properties[0].get("project_name")
             elif hasattr(properties[0], "project_name"):
                 state["booking_project"] = properties[0].project_name
+            print(f"[BOOKING] Default to first property: {state.get('booking_project')}", flush=True)
 
         if properties:
             state["selected_property"] = properties[0]
@@ -336,6 +481,7 @@ Set needs_web_search=true if the question asks about:
         state["needs_more_info"] = len(missing) > 0
         state["missing_preferences"] = missing
 
+        print(f"[BOOKING] Final booking_project: {state.get('booking_project')}, missing: {missing}", flush=True)
         return state
 
     def _collect_lead_info(self, state: AgentState) -> AgentState:
@@ -412,6 +558,7 @@ Set needs_web_search=true if the question asks about:
             properties = state.get("recommended_properties", [])
             prefs = state.get("preferences", {})
             missing = state.get("missing_preferences", [])
+            searched_city = prefs.get("city")
 
             if properties:
                 props_text = "\n".join([
@@ -423,6 +570,13 @@ Set needs_web_search=true if the question asks about:
                     preferences=json.dumps(prefs, indent=2),
                     properties=props_text
                 )
+            elif searched_city:
+                # User asked for a specific city but no properties found
+                prompt = f"""The user asked about properties in {searched_city}, but we have NO properties there.
+
+Tell them honestly: "I'm sorry, we don't currently have any properties in {searched_city}."
+Suggest our top locations: Dubai (76 properties), Miami (39), Phuket (26), Bangkok (23), London (12), Abu Dhabi (6).
+Ask which city interests them."""
             elif missing:
                 prompt = f"""The user is looking for a property.
 Current preferences: {json.dumps(prefs)}
@@ -439,11 +593,18 @@ Apologize and ask if they'd like to adjust their requirements or explore differe
             sql_results = state.get("sql_results")
             web_results = state.get("web_search_results", "")
 
+            # Debug logging
+            print(f"[GENERATE] answering_question - sql_results count: {len(sql_results) if sql_results else 0}", flush=True)
+            print(f"[GENERATE] answering_question - web_results length: {len(web_results) if web_results else 0}", flush=True)
+            if web_results:
+                print(f"[GENERATE] Web results preview (first 500 chars):\n{web_results[:500]}", flush=True)
+
             prompt = QUESTION_ANSWERING_PROMPT.format(
                 question=user_message,
                 property_info=json.dumps(sql_results, indent=2) if sql_results else "No database results",
                 web_results=web_results or "No web search performed"
             )
+            print(f"[GENERATE] Full prompt length: {len(prompt)} chars", flush=True)
             messages.append(HumanMessage(content=prompt))
 
         elif intent in ("booking_visit", "collecting_lead_info"):
@@ -520,6 +681,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
                 "preferences": final_state.get("preferences", {}),
                 "lead_info": final_state.get("lead_info", {}),
                 "recommended_properties": final_state.get("recommended_properties", []),
+                "interested_properties": final_state.get("interested_properties", []),
                 "booking_confirmed": final_state.get("booking_confirmed", False),
                 "booking_project": final_state.get("booking_project")
             }
@@ -601,7 +763,9 @@ Confirm the booking enthusiastically. Let them know a representative will contac
                 "preferences": state.get("preferences", {}),
                 "lead_info": state.get("lead_info", {}),
                 "recommended_properties": state.get("recommended_properties", []),
-                "booking_confirmed": state.get("booking_confirmed", False)
+                "interested_properties": state.get("interested_properties", []),
+                "booking_confirmed": state.get("booking_confirmed", False),
+                "booking_project": state.get("booking_project")
             }}
 
         except Exception as e:
@@ -628,6 +792,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
             properties = state.get("recommended_properties", [])
             prefs = state.get("preferences", {})
             missing = state.get("missing_preferences", [])
+            searched_city = prefs.get("city")
 
             if properties:
                 props_text = "\n".join([
@@ -639,6 +804,10 @@ Confirm the booking enthusiastically. Let them know a representative will contac
                     preferences=json.dumps(prefs, indent=2),
                     properties=props_text
                 )
+            elif searched_city:
+                prompt = f"""The user asked about properties in {searched_city}, but we have NO properties there.
+Tell them honestly we don't have properties in {searched_city}.
+Suggest our top locations: Dubai (76), Miami (39), Phuket (26), Bangkok (23), London (12), Abu Dhabi (6)."""
             elif missing:
                 prompt = f"""User preferences so far: {json.dumps(prefs)}
 Still need: {', '.join(missing)}
@@ -647,10 +816,19 @@ Ask about missing info in a friendly way."""
                 prompt = "No matching properties found. Suggest adjusting criteria."
 
         elif intent == "answering_question":
+            sql_results = state.get("sql_results")
+            web_results = state.get("web_search_results")
+
+            # Debug logging
+            print(f"[BUILD_MESSAGES] answering_question - sql_results: {len(sql_results) if sql_results else 0}", flush=True)
+            print(f"[BUILD_MESSAGES] answering_question - web_results length: {len(web_results) if web_results else 0}", flush=True)
+            if web_results:
+                print(f"[BUILD_MESSAGES] Web results preview:\n{web_results[:500]}", flush=True)
+
             prompt = QUESTION_ANSWERING_PROMPT.format(
                 question=user_message,
-                property_info=json.dumps(state.get("sql_results"), indent=2) or "None",
-                web_results=state.get("web_search_results") or "None"
+                property_info=json.dumps(sql_results, indent=2) if sql_results else "No database results",
+                web_results=web_results or "No web search performed"
             )
 
         elif intent in ("booking_visit", "collecting_lead_info"):
