@@ -2,27 +2,6 @@
 
 A sophisticated conversational AI assistant for **Silver Land Properties**, built to help property buyers find their perfect home and schedule property viewings.
 
-![Python](https://img.shields.io/badge/Python-3.11-blue)
-![Django](https://img.shields.io/badge/Django-5.1-green)
-![LangGraph](https://img.shields.io/badge/LangGraph-0.2-purple)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
-![License](https://img.shields.io/badge/License-MIT-yellow)
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [System Architecture](#system-architecture)
-- [LangGraph Agent Flow](#langgraph-agent-flow)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [API Documentation](#api-documentation)
-- [Database Schema](#database-schema)
-- [Setup & Installation](#setup--installation)
-- [Deployment](#deployment)
-- [Testing](#testing)
-- [Design Decisions](#design-decisions)
-
 ---
 
 ## Overview
@@ -37,7 +16,7 @@ PropLens is an AI-powered property sales assistant that:
 
 ### Live Demo
 
-- **Frontend**: [https://proplens.vercel.app](https://proplens.vercel.app)
+- **Frontend**: [https://property-sales-agentic-assistant.vercel.app/](https://property-sales-agentic-assistant.vercel.app/)
 - **Backend API**: [https://property-sales-agentic-assistant.onrender.com/api/docs](https://property-sales-agentic-assistant.onrender.com/api/docs)
 
 ---
@@ -515,66 +494,6 @@ erDiagram
     }
 ```
 
-### Table Definitions
-
-```sql
--- Projects table (1068 properties)
-CREATE TABLE proplens_project (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_name VARCHAR(255) NOT NULL,
-    developer VARCHAR(255),
-    city VARCHAR(100),
-    country VARCHAR(100),
-    description TEXT,
-    property_type VARCHAR(50),
-    bedrooms INTEGER,
-    price_usd DECIMAL(15, 2),
-    size_sqft INTEGER,
-    facilities JSONB,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Leads table
-CREATE TABLE proplens_lead (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID REFERENCES proplens_conversation(id),
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
-    email VARCHAR(255),
-    phone VARCHAR(50),
-    preferences JSONB,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Bookings table
-CREATE TABLE proplens_booking (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    lead_id UUID REFERENCES proplens_lead(id),
-    project_id UUID REFERENCES proplens_project(id),
-    status VARCHAR(50) DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Conversations table
-CREATE TABLE proplens_conversation (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    context JSONB DEFAULT '{}',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
--- Messages table
-CREATE TABLE proplens_message (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_id UUID REFERENCES proplens_conversation(id),
-    role VARCHAR(20) NOT NULL,
-    content TEXT NOT NULL,
-    extra_data JSONB,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
----
-
 ## Setup & Installation
 
 ### Prerequisites
@@ -636,52 +555,6 @@ CREATE TABLE proplens_message (
 | `ALLOWED_HOSTS` | No | Comma-separated allowed hosts |
 
 *Either `DATABASE_URL` or individual `POSTGRES_*` variables required
-
----
-
-## Deployment
-
-### Backend on Render
-
-1. **Create PostgreSQL Database**
-   - Render Dashboard → New + → PostgreSQL
-   - Note the **Internal Database URL**
-
-2. **Create Web Service**
-   - Render Dashboard → New + → Web Service
-   - Connect GitHub repository
-   - Configure:
-     - **Name**: `proplens-backend`
-     - **Root Directory**: `backend`
-     - **Runtime**: Docker
-     - **Instance Type**: Free (or higher)
-
-3. **Set Environment Variables**
-   ```
-   DATABASE_URL = [Internal Database URL from step 1]
-   OPENAI_API_KEY = sk-proj-...
-   TAVILY_API_KEY = tvly-...
-   ALLOWED_HOSTS = .onrender.com
-   ```
-
-4. **Deploy** - Render auto-deploys on push
-
-### Frontend on Vercel
-
-1. **Import Project**
-   - Vercel Dashboard → Add New → Project
-   - Import from GitHub
-
-2. **Configure**
-   - **Root Directory**: `frontend`
-   - **Framework Preset**: Next.js
-
-3. **Set Environment Variable**
-   ```
-   NEXT_PUBLIC_API_URL = https://your-backend.onrender.com
-   ```
-
-4. **Deploy**
 
 ---
 
@@ -868,14 +741,6 @@ Silvy: Booking berhasil! Tim kami akan menghubungi Anda di budi@email.com.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License
 
 ---
-
-## Acknowledgments
-
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration framework
-- [Vanna AI](https://vanna.ai) - Text-to-SQL solution
-- [Django Ninja](https://django-ninja.rest-framework.com/) - Fast API framework
-- [Tavily](https://tavily.com) - Web search API
-- [OpenAI](https://openai.com) - GPT-4o-mini language model
