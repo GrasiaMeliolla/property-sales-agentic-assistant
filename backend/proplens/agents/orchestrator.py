@@ -2,6 +2,7 @@
 import json
 import re
 import logging
+from difflib import SequenceMatcher
 from typing import Dict, Any, Optional, List, AsyncGenerator, Literal
 
 from django.conf import settings
@@ -147,6 +148,20 @@ class PropertySalesAgent:
             recent = messages_history[-4:] if len(messages_history) > 4 else messages_history
             context = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
 
+        # Add recommended property names to context for better matching
+        recommended_properties = state.get("recommended_properties", [])
+        if recommended_properties:
+            property_names = []
+            for prop in recommended_properties:
+                if isinstance(prop, dict):
+                    property_names.append(prop.get("project_name", ""))
+                elif hasattr(prop, "project_name"):
+                    property_names.append(prop.project_name)
+            if property_names:
+                context += f"\n\nAVAILABLE PROPERTIES (user may reference these with typos or partial names):\n"
+                for i, name in enumerate(property_names, 1):
+                    context += f"{i}. {name}\n"
+
         # Use structured output with function calling
         intent_classifier = self.llm.with_structured_output(IntentClassification)
 
@@ -202,7 +217,16 @@ Examples:
                 if result.interested_property not in interested:
                     interested.append(result.interested_property)
                 state["interested_properties"] = interested
+                state["context_property"] = result.interested_property
                 print(f"[INTENT] Interested in property: {result.interested_property}", flush=True)
+
+            # Detect property mentions for context tracking (for any intent)
+            # This helps with "book it" after asking about a specific property
+            if not result.interested_property and recommended_properties:
+                detected_property = self._detect_property_mention(message, recommended_properties)
+                if detected_property:
+                    state["context_property"] = detected_property
+                    print(f"[INTENT] Context property detected: {detected_property}", flush=True)
 
             print(f"[INTENT] Result: intent={result.intent}, confidence={result.confidence:.2f}, "
                   f"needs_web_search={result.needs_web_search}", flush=True)
@@ -429,6 +453,83 @@ Return ONLY: {{"city": "city name or null"}}"""
 
         return state
 
+    def _fuzzy_match_score(self, user_input: str, property_name: str) -> float:
+        """Calculate fuzzy match score between user input and property name.
+
+        Returns a score between 0 and 1, where 1 is a perfect match.
+        Uses multiple strategies: exact match, word overlap, and fuzzy similarity.
+        """
+        user_input = user_input.lower().strip()
+        property_name_lower = property_name.lower()
+
+        # Strategy 1: Exact substring match (highest priority)
+        if property_name_lower in user_input or user_input in property_name_lower:
+            return 1.0
+
+        # Strategy 2: Word-based matching with fuzzy comparison
+        user_words = [w for w in user_input.split() if len(w) > 2]
+        prop_words = [w for w in property_name_lower.split() if len(w) > 2]
+
+        if not user_words or not prop_words:
+            return 0.0
+
+        total_score = 0.0
+        matched_words = 0
+
+        for user_word in user_words:
+            best_word_score = 0.0
+            for prop_word in prop_words:
+                # Exact word match
+                if user_word == prop_word:
+                    best_word_score = 1.0
+                    break
+                # Word contained in property word
+                if user_word in prop_word or prop_word in user_word:
+                    best_word_score = max(best_word_score, 0.8)
+                # Fuzzy match for typos (e.g., "banyak" vs "banyan")
+                similarity = SequenceMatcher(None, user_word, prop_word).ratio()
+                if similarity > 0.6:  # Threshold for considering it a fuzzy match
+                    best_word_score = max(best_word_score, similarity * 0.9)
+
+            if best_word_score > 0.5:
+                matched_words += 1
+                total_score += best_word_score
+
+        if matched_words == 0:
+            return 0.0
+
+        # Score based on proportion of matched words and their quality
+        avg_score = total_score / len(user_words)
+        match_ratio = matched_words / len(user_words)
+
+        return avg_score * match_ratio
+
+    def _detect_property_mention(self, message: str, properties: list) -> Optional[str]:
+        """Detect if user mentions a specific property in their message.
+
+        Used to track context property for follow-up messages like 'book it'.
+        """
+        best_match = None
+        best_score = 0.0
+
+        for prop in properties:
+            if isinstance(prop, dict):
+                prop_name = prop.get("project_name", "")
+            elif hasattr(prop, "project_name"):
+                prop_name = prop.project_name
+            else:
+                continue
+
+            if not prop_name:
+                continue
+
+            score = self._fuzzy_match_score(message, prop_name)
+            if score > best_score and score >= 0.3:
+                best_score = score
+                best_match = prop_name
+
+        return best_match
+
     def _handle_booking(self, state: AgentState) -> AgentState:
         """Handle property visit booking."""
         properties = state.get("recommended_properties", [])
@@ -444,32 +545,57 @@ Return ONLY: {{"city": "city name or null"}}"""
             state["booking_project"] = interested_props[-1]
             print(f"[BOOKING] Set booking_project from interested: {state['booking_project']}", flush=True)
 
-        # Priority 2: Try to match user message against recommended properties
+        # Priority 2: Fuzzy match user message against recommended properties
+        # Score all properties and pick the best match
         if not state.get("booking_project") and properties:
+            best_match = None
+            best_score = 0.0
+
             for prop in properties:
                 prop_name = prop.get("project_name", "") if isinstance(prop, dict) else getattr(prop, "project_name", "")
-                if prop_name and prop_name.lower() in user_message:
-                    state["booking_project"] = prop_name
-                    print(f"[BOOKING] Matched property from message: {prop_name}", flush=True)
+                if not prop_name:
+                    continue
+
+                score = self._fuzzy_match_score(user_message, prop_name)
+                print(f"[BOOKING] Fuzzy score for '{prop_name}': {score:.3f}", flush=True)
+
+                if score > best_score:
+                    best_score = score
+                    best_match = prop_name
+
+            # Only use match if score is above threshold
+            if best_match and best_score >= 0.3:
+                state["booking_project"] = best_match
+                print(f"[BOOKING] Best fuzzy match: '{best_match}' with score {best_score:.3f}", flush=True)
+
+        # Priority 3: Use context_property (property user was asking about) for affirmative responses
+        affirmatives = ["yes", "ok", "okay", "sure", "book", "want", "mau", "iya", "boleh", "oke", "yup", "yep"]
+        is_affirmative = any(word in user_message.split() for word in affirmatives)
+
+        if not state.get("booking_project") and is_affirmative:
+            # First try context_property (the property user was last discussing)
+            context_prop = state.get("context_property")
+            if context_prop:
+                state["booking_project"] = context_prop
+                print(f"[BOOKING] Using context property: {context_prop}", flush=True)
+            # Fallback to first property only if no context
+            elif properties:
+                if isinstance(properties[0], dict):
+                    state["booking_project"] = properties[0].get("project_name")
+                elif hasattr(properties[0], "project_name"):
+                    state["booking_project"] = properties[0].project_name
+                print(f"[BOOKING] Default to first property (no context): {state.get('booking_project')}", flush=True)
+
+        # Update selected_property to match booking_project
+        if state.get("booking_project") and properties:
+            for prop in properties:
+                prop_name = prop.get("project_name", "") if isinstance(prop, dict) else getattr(prop, "project_name", "")
+                if prop_name == state.get("booking_project"):
+                    state["selected_property"] = prop
                     break
-                # Also check partial match (e.g., "jds" matches "JDS Group - Miami")
-                if prop_name:
-                    words = user_message.split()
-                    for word in words:
-                        if len(word) > 2 and word in prop_name.lower():
-                            state["booking_project"] = prop_name
-                            print(f"[BOOKING] Partial match: '{word}' in '{prop_name}'", flush=True)
-                            break
-
-        # Priority 3: Default to first recommended property
-        if not state.get("booking_project") and properties:
-            if isinstance(properties[0], dict):
-                state["booking_project"] = properties[0].get("project_name")
-            elif hasattr(properties[0], "project_name"):
-                state["booking_project"] = properties[0].project_name
-            print(f"[BOOKING] Default to first property: {state.get('booking_project')}", flush=True)
-
-        if properties:
+            else:
+                state["selected_property"] = properties[0]
+        elif properties:
             state["selected_property"] = properties[0]
 
         missing = []
@@ -682,6 +808,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
                 "lead_info": final_state.get("lead_info", {}),
                 "recommended_properties": final_state.get("recommended_properties", []),
                 "interested_properties": final_state.get("interested_properties", []),
+                "context_property": final_state.get("context_property"),
                 "booking_confirmed": final_state.get("booking_confirmed", False),
                 "booking_project": final_state.get("booking_project")
             }
@@ -701,7 +828,8 @@ Confirm the booking enthusiastically. Let them know a representative will contac
         preferences: Optional[Dict] = None,
         lead_info: Optional[Dict] = None,
         recommended_properties: Optional[List] = None,
-        booking_project: Optional[str] = None
+        booking_project: Optional[str] = None,
+        context_property: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process a user message with streaming response."""
 
@@ -713,6 +841,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
             "lead_info": lead_info or {},
             "recommended_properties": recommended_properties or [],
             "booking_project": booking_project,
+            "context_property": context_property,
             "response": "",
             "booking_confirmed": False,
             "needs_more_info": False,
@@ -764,6 +893,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
                 "lead_info": state.get("lead_info", {}),
                 "recommended_properties": state.get("recommended_properties", []),
                 "interested_properties": state.get("interested_properties", []),
+                "context_property": state.get("context_property"),
                 "booking_confirmed": state.get("booking_confirmed", False),
                 "booking_project": state.get("booking_project")
             }}
