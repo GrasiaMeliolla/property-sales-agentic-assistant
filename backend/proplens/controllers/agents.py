@@ -221,9 +221,9 @@ class AgentsController:
                     # Save all context including recommended properties
                     recommended = final_result.get("recommended_properties", [])
                     interested = final_result.get("interested_properties", [])
-                    booking_project = None
-                    if recommended:
-                        booking_project = recommended[0].get("project_name") if isinstance(recommended[0], dict) else None
+                    # Only save booking_project if explicitly set by booking handler
+                    # Don't auto-set to first property - that caused the wrong property to be booked
+                    booking_project = final_result.get("booking_project")
 
                     conversation_service.update_context(
                         conv_id_uuid,
