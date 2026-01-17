@@ -132,6 +132,7 @@ class AgentsController:
         recommended = context.get("recommended_properties", [])
         booking_project = context.get("booking_project")
         context_property = context.get("context_property")
+        interested_properties = context.get("interested_properties", [])
 
         conversation_service.add_message(
             conversation_id=data.conversation_id,
@@ -146,6 +147,7 @@ class AgentsController:
         prev_recommended = recommended
         prev_booking_project = booking_project
         prev_context_property = context_property
+        prev_interested_properties = interested_properties
         prev_lead = lead
 
         def generate():
@@ -163,7 +165,8 @@ class AgentsController:
                     lead_info=prev_lead,
                     recommended_properties=prev_recommended,
                     booking_project=prev_booking_project,
-                    context_property=prev_context_property
+                    context_property=prev_context_property,
+                    interested_properties=prev_interested_properties
                 ):
                     chunk_type = chunk.get("type")
                     chunk_data = chunk.get("data")

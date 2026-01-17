@@ -537,7 +537,8 @@ Return ONLY: {{"city": "city name or null"}}"""
         user_message = state.get("user_message", "").lower()
         interested_props = state.get("interested_properties", [])
 
-        print(f"[BOOKING] Properties: {len(properties)}, interested: {interested_props}", flush=True)
+        context_prop = state.get("context_property")
+        print(f"[BOOKING] Properties: {len(properties)}, interested: {interested_props}, context: {context_prop}", flush=True)
         print(f"[BOOKING] User message: '{user_message}'", flush=True)
 
         # Priority 1: Use interested_property from intent classification
@@ -829,7 +830,8 @@ Confirm the booking enthusiastically. Let them know a representative will contac
         lead_info: Optional[Dict] = None,
         recommended_properties: Optional[List] = None,
         booking_project: Optional[str] = None,
-        context_property: Optional[str] = None
+        context_property: Optional[str] = None,
+        interested_properties: Optional[List[str]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process a user message with streaming response."""
 
@@ -842,6 +844,7 @@ Confirm the booking enthusiastically. Let them know a representative will contac
             "recommended_properties": recommended_properties or [],
             "booking_project": booking_project,
             "context_property": context_property,
+            "interested_properties": interested_properties or [],
             "response": "",
             "booking_confirmed": False,
             "needs_more_info": False,
